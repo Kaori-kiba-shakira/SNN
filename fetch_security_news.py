@@ -349,10 +349,10 @@ def build_notification_text(
 ) -> str:
     relevance_map = relevance_map or {}
     if not items:
-        return f"Security Incident: no items found. source={source_url}"
+        return f"Security Update: no items found. source={source_url}"
 
     timestamp = items[0].timestamp
-    lines = [f"Security Incident Update ({timestamp})", f"source: {source_url}"]
+    lines = [f"Security Update ({timestamp})", f"source: {source_url}"]
     if total_items is not None:
         lines.append(f"total_previous_day_items: {total_items}")
     if evaluated_items is not None:
@@ -1066,7 +1066,7 @@ def main() -> int:
                         return 0
 
                 send_email_notification(
-                    subject=f"Security Incident Update ({timestamp})",
+                    subject=f"Security Update ({timestamp})",
                     body=text,
                     smtp_host=smtp_host,
                     smtp_port=smtp_port,
