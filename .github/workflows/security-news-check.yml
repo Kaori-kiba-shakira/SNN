@@ -1,14 +1,15 @@
 name: security-news-check
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    # 毎日 08:00 JST（= 前日 23:00 UTC）
+    - cron: "0 23 * * *"
+  workflow_dispatch:
 
 jobs:
-  probe-and-fetch:
+  run-fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -22,37 +23,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore notification state
-        uses: actions/cache/restore@v4
-        with:
-          path: .state
-          key: security-news-state-${{ github.ref_name }}
-          restore-keys: |
-            security-news-state-
-
-      - name: Probe reachability (HEAD)
-        continue-on-error: true
-        run: |
-          for url in \
-            "http://izumino.jp/Security/sec_trend.cgi" \
-            "https://www.security-next.com/feed"; do
-            curl -I -L --max-time 20 \
-              -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36" \
-              "$url"
-          done
-
-      - name: Probe reachability (body sample)
-        continue-on-error: true
-        run: |
-          curl -L --max-time 20 \
-            -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36" \
-            "http://izumino.jp/Security/sec_trend.cgi" | head -n 30
-          curl -L --max-time 20 \
-            -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36" \
-            "https://www.security-next.com/feed" | head -n 30
-
-      - name: Fetch and parse previous-day entries (fail-soft)
+      - name: Run daily security fetch
         env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -61,29 +34,10 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           SMTP_SSL: ${{ secrets.SMTP_SSL }}
           SMTP_STARTTLS: ${{ secrets.SMTP_STARTTLS }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_API_BASE: ${{ secrets.GROQ_API_BASE }}
-          GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
-          GROQ_EVAL_MIN_INTERVAL_SEC: ${{ secrets.GROQ_EVAL_MIN_INTERVAL_SEC }}
-          GROQ_EVAL_MAX_RETRIES: ${{ secrets.GROQ_EVAL_MAX_RETRIES }}
-          GROQ_EVAL_MAX_BACKOFF_SEC: ${{ secrets.GROQ_EVAL_MAX_BACKOFF_SEC }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GOOGLE_API_BASE: ${{ secrets.GOOGLE_API_BASE }}
-          GOOGLE_MODEL: ${{ secrets.GOOGLE_MODEL }}
-          GOOGLE_EVAL_MIN_INTERVAL_SEC: ${{ secrets.GOOGLE_EVAL_MIN_INTERVAL_SEC }}
-          GOOGLE_EVAL_MAX_RETRIES: ${{ secrets.GOOGLE_EVAL_MAX_RETRIES }}
-          GOOGLE_EVAL_MAX_BACKOFF_SEC: ${{ secrets.GOOGLE_EVAL_MAX_BACKOFF_SEC }}
-          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
         run: |
-          if [ "${LLM_PROVIDER:-groq}" = "google" ]; then
-            python fetch_security_news.py --previous-day-all --output text --fail-soft --notify-email --suppress-duplicate --notify-only-new --state-file .state/last_notification.json --evaluate-with-google-studio --relevance-threshold 0.9 --google-api-base "${GOOGLE_API_BASE:-https://generativelanguage.googleapis.com/v1beta}" --google-model "${GOOGLE_MODEL:-gemini-2.5-flash}"
-          else
-            python fetch_security_news.py --previous-day-all --output text --fail-soft --notify-email --suppress-duplicate --notify-only-new --state-file .state/last_notification.json --evaluate-with-groq --relevance-threshold 0.9 --groq-api-base "${GROQ_API_BASE:-https://api.groq.com/openai/v1}" --groq-model "${GROQ_MODEL:-llama-3.3-70b-versatile}"
-          fi
-
-      - name: Save notification state
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .state
-          key: security-news-state-${{ github.ref_name }}-${{ github.run_id }}
+          python fetch_security_news.py \
+            --previous-day-all \
+            --evaluate-with-groq \
+            --groq-model llama-3.1-8b-instant \
+            --fail-soft \
+            --notify-email
