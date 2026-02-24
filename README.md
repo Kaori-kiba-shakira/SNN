@@ -1,4 +1,4 @@
-# ScurityNewsNotification
+# ScurityUpdate
 
 `http://izumino.jp/Security/sec_trend.cgi` と `https://www.security-next.com/feed` を取得し、前日分のニュースを抽出して通知するための最小構成です。
 
