@@ -840,12 +840,14 @@ def send_email_notification(
 
     if use_ssl:
         with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20) as smtp:
+            smtp.set_debuglevel(1)
             if smtp_username and smtp_password:
                 smtp.login(smtp_username, smtp_password)
             smtp.send_message(msg)
         return
 
     with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
+        smtp.set_debuglevel(1)
         if use_starttls:
             smtp.starttls()
         if smtp_username and smtp_password:
