@@ -1068,7 +1068,7 @@ def main() -> int:
                         return 0
 
                 send_email_notification(
-                    subject=f"本日のインシデント情報 ({timestamp})",
+                    subject=f"Security Update ({timestamp})",
                     body=text,
                     smtp_host=smtp_host,
                     smtp_port=smtp_port,
