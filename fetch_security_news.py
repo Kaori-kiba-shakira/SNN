@@ -349,10 +349,10 @@ def build_notification_text(
 ) -> str:
     relevance_map = relevance_map or {}
     if not items:
-        return f"Security Update: no items found. source={source_url}"
+        return f"Security Update: no items found. "
 
     timestamp = items[0].timestamp
-    lines = [f"Security Update ({timestamp})", f"source: {source_url}"]
+    lines = [f"Security Update ({timestamp})"]
     if total_items is not None:
         lines.append(f"total_previous_day_items: {total_items}")
     if evaluated_items is not None:
