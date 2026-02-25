@@ -349,7 +349,7 @@ def build_notification_text(
 ) -> str:
     relevance_map = relevance_map or {}
     if not items:
-        return f"Security Update: 今日のセキュリティインシデント情報はありませんでした. "
+        return f"Security Update: 今日のセキュリティインシデント情報はありません. "
 
     timestamp = items[0].timestamp
     lines = [f"Security Update ({timestamp})"]
@@ -1068,7 +1068,7 @@ def main() -> int:
                         return 0
 
                 send_email_notification(
-                    subject=f"Security Update ({timestamp})",
+                    subject=f"本日のインシデント情報 ({timestamp})",
                     body=text,
                     smtp_host=smtp_host,
                     smtp_port=smtp_port,
