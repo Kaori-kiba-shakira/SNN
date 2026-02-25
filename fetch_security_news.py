@@ -349,7 +349,7 @@ def build_notification_text(
 ) -> str:
     relevance_map = relevance_map or {}
     if not items:
-        return f"Security Update: no items found. "
+        return f"Security Update: 今日のセキュリティインシデント情報はありませんでした. "
 
     timestamp = items[0].timestamp
     lines = [f"Security Update ({timestamp})"]
