@@ -357,13 +357,6 @@ def build_notification_text(
     if parsed_date is not None:
         date_for_header = parsed_date.isoformat()
     lines = [f"Security Update ({date_for_header})"]
-    if total_items is not None:
-        lines.append(f"total_previous_day_items: {total_items}")
-    if evaluated_items is not None:
-        lines.append(f"evaluated_items: {evaluated_items}")
-    if threshold is not None:
-        lines.append(f"relevance_threshold: {threshold:.2f}")
-    lines.append(f"notified_items: {len(items)}")
     for item in items:
         key = build_item_key(item)
         relevance = relevance_map.get(key)
@@ -378,6 +371,7 @@ def build_notification_text(
         if item.url:
             lines.append(f"  {item.url}")
         lines.append("")
+
     return "\n".join(lines)
 
 
