@@ -352,7 +352,11 @@ def build_notification_text(
         return f"Security Update: 今日のセキュリティインシデント情報はありません. "
 
     timestamp = items[0].timestamp
-    lines = [f"Security Update ({timestamp})"]
+    date_for_header = timestamp
+    parsed_date = _extract_date_from_timestamp(timestamp)
+    if parsed_date is not None:
+        date_for_header = parsed_date.isoformat()
+    lines = [f"Security Update ({date_for_header})"]
     if total_items is not None:
         lines.append(f"total_previous_day_items: {total_items}")
     if evaluated_items is not None:
@@ -385,6 +389,20 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     try:
         value = json.loads(text[start : end + 1])
         if isinstance(value, dict):
+            return value
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _extract_json_array(text: str) -> list[Any] | None:
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        value = json.loads(text[start : end + 1])
+        if isinstance(value, list):
             return value
         return None
     except Exception:  # noqa: BLE001
@@ -600,6 +618,165 @@ def evaluate_items_with_groq_sequential(
                 summary="",
             )
         results[build_item_key(item)] = relevance
+    return results
+
+
+def evaluate_items_with_grok_fast_reasoning_batch(
+    items: List[SecurityNewsItem],
+    *,
+    api_base: str,
+    api_key: str,
+    model: str,
+    timeout: tuple[float, float],
+) -> dict[str, RelevanceResult]:
+    global _LAST_LLM_CALL_TS
+
+    if not items:
+        return {}
+
+    min_interval_sec = _env_float("GROK_EVAL_MIN_INTERVAL_SEC", 5.0)
+    max_retries = _env_int("GROK_EVAL_MAX_RETRIES", 3)
+    max_backoff_sec = _env_float("GROK_EVAL_MAX_BACKOFF_SEC", 90.0)
+
+    endpoint = f"{api_base.rstrip('/')}/chat/completions"
+    prompt_items = []
+    for index, item in enumerate(items, start=1):
+        prompt_items.append(
+            {
+                "index": index,
+                "timestamp": item.timestamp,
+                "media": item.media,
+                "title": item.title,
+                "url": item.url,
+                "body": item.body,
+            }
+        )
+
+    prompt = (
+        "あなたはセキュリティニュースの関連度評価器です。"
+        "入力されたニュース一覧について、各ニュースが中央省庁または自治体、独立行政法人、保育園、こども園、幼稚園のセキュリティインシデントに該当するかを0.0から1.0で評価してください。"
+        "必ずJSONのみで返答し、以下のスキーマを厳守してください。"
+        '{"results":[{"index":1,"score":0.0,"name":"インシデントが起きた組織名","summary":"score0.9以上の場合は200字以内で要約"}]}'
+        "index は必ず入力と同じ値で、score0.9以上のニュースを返すものとし、同一のインシデントに関するニュースが複数ある場合は1件だけ返してください。"
+        f"news_list: {json.dumps(prompt_items, ensure_ascii=False)}"
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "あなたはセキュリティニュースの評価器です。"
+                    "必ずJSONのみを返し、トップレベルは results 配列を含むオブジェクトにしてください。"
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    data: dict[str, Any] | None = None
+    for attempt in range(max_retries + 1):
+        elapsed = time.monotonic() - _LAST_LLM_CALL_TS
+        if elapsed < min_interval_sec:
+            time.sleep(min_interval_sec - elapsed)
+
+        try:
+            response = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+        except requests.RequestException as exc:
+            if attempt >= max_retries:
+                raise RuntimeError("Grok API request failed") from exc
+            wait_sec = min(max_backoff_sec, (2**attempt) + random.uniform(0.0, 0.8))
+            print(
+                f"[evaluate-retry] request-failed sleep={wait_sec:.1f}s attempt={attempt + 1}/{max_retries}",
+                file=sys.stderr,
+            )
+            time.sleep(wait_sec)
+            continue
+
+        _LAST_LLM_CALL_TS = time.monotonic()
+        status = response.status_code
+
+        if status in (429, 500, 502, 503, 504):
+            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+            if retry_after is not None:
+                wait_sec = min(120.0, retry_after)
+            else:
+                wait_sec = min(max_backoff_sec, (2**attempt) + random.uniform(0.0, 0.8))
+            if attempt >= max_retries:
+                raise RuntimeError(f"Grok API HTTP {status} (retry limit reached)")
+            print(
+                f"[evaluate-retry] status={status} sleep={wait_sec:.1f}s attempt={attempt + 1}/{max_retries}",
+                file=sys.stderr,
+            )
+            time.sleep(wait_sec)
+            continue
+
+        if status >= 400:
+            raise RuntimeError(f"Grok API HTTP {status}")
+
+        data = response.json()
+        break
+
+    if data is None:
+        raise RuntimeError("Grok API response unavailable")
+
+    choices = data.get("choices", [])
+    answer = ""
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message", {})
+        if isinstance(message, dict):
+            answer = str(message.get("content", "")).strip()
+
+    parsed_obj = _extract_json_object(answer)
+    raw_results: list[Any] = []
+    if parsed_obj and isinstance(parsed_obj.get("results"), list):
+        raw_results = parsed_obj.get("results", [])
+    else:
+        parsed_arr = _extract_json_array(answer)
+        if parsed_arr is not None:
+            raw_results = parsed_arr
+
+    score_by_index: dict[int, RelevanceResult] = {}
+    for value in raw_results:
+        if not isinstance(value, dict):
+            continue
+        index_raw = value.get("index")
+        try:
+            index = int(index_raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if index < 1 or index > len(items):
+            continue
+
+        item = items[index - 1]
+        score = _coerce_score(value.get("score", 0.0))
+        name = _truncate_text(value.get("name", ""), 120)
+        summary = _truncate_text(value.get("summary", ""), 100)
+
+        if not _is_target_org_context(name, item.title, item.body):
+            score = 0.0
+            name = ""
+            summary = ""
+
+        if score < DETAIL_THRESHOLD:
+            name = ""
+            summary = ""
+
+        score_by_index[index] = RelevanceResult(score=score, name=name, summary=summary)
+
+    results: dict[str, RelevanceResult] = {}
+    for index, item in enumerate(items, start=1):
+        results[build_item_key(item)] = score_by_index.get(
+            index,
+            RelevanceResult(score=0.0, name="", summary=""),
+        )
     return results
 
 
@@ -927,6 +1104,7 @@ def main() -> int:
     parser.add_argument("--notify-only-new", action="store_true")
     parser.add_argument("--state-file", default=".state/last_notification.json")
     parser.add_argument("--evaluate-with-groq", action="store_true")
+    parser.add_argument("--evaluate-with-grok-4-1-fast-reasoning", action="store_true")
     parser.add_argument("--evaluate-with-google-studio", action="store_true")
     parser.add_argument("--relevance-threshold", type=float, default=0.9)
     parser.add_argument("--groq-api-base", default="https://api.groq.com/openai/v1")
@@ -935,6 +1113,9 @@ def main() -> int:
     parser.add_argument("--google-api-base", default="https://generativelanguage.googleapis.com/v1beta")
     parser.add_argument("--google-api-key-env", default="GOOGLE_API_KEY")
     parser.add_argument("--google-model", default="gemini-2.5-flash")
+    parser.add_argument("--grok-api-base", default="https://api.x.ai/v1")
+    parser.add_argument("--grok-api-key-env", default="GROK_API_KEY")
+    parser.add_argument("--grok-model", default="grok-4-1-fast-reasoning")
     args = parser.parse_args()
 
     try:
@@ -955,10 +1136,45 @@ def main() -> int:
         relevance_map: dict[str, RelevanceResult] = {}
         evaluated_items_count = 0
         relevance_threshold_applied: float | None = None
-        if args.evaluate_with_groq and args.evaluate_with_google_studio:
-            print("[evaluate-warn] both providers requested; using groq", file=sys.stderr)
+        selected_providers = [
+            args.evaluate_with_grok_4_1_fast_reasoning,
+            args.evaluate_with_groq,
+            args.evaluate_with_google_studio,
+        ]
+        if sum(1 for value in selected_providers if value) > 1:
+            print(
+                "[evaluate-warn] multiple providers requested; using grok-4-1-fast-reasoning route first",
+                file=sys.stderr,
+            )
 
-        if args.evaluate_with_groq:
+        if args.evaluate_with_grok_4_1_fast_reasoning:
+            grok_api_key = os.getenv(args.grok_api_key_env, "").strip()
+            if not grok_api_key:
+                print(
+                    f"[evaluate-skip] env var '{args.grok_api_key_env}' is not set",
+                    file=sys.stderr,
+                )
+            else:
+                relevance_map = evaluate_items_with_grok_fast_reasoning_batch(
+                    items,
+                    api_base=args.grok_api_base,
+                    api_key=grok_api_key,
+                    model=args.grok_model,
+                    timeout=(args.connect_timeout, args.read_timeout),
+                )
+                evaluated_items_count = len(items)
+                relevance_threshold_applied = args.relevance_threshold
+
+                items = [
+                    item
+                    for item in items
+                    if relevance_map.get(
+                        build_item_key(item),
+                        RelevanceResult(0.0, "", ""),
+                    ).score
+                    >= args.relevance_threshold
+                ]
+        elif args.evaluate_with_groq:
             groq_api_key = os.getenv(args.groq_api_key_env, "").strip()
             if not groq_api_key:
                 print(
@@ -1060,6 +1276,12 @@ def main() -> int:
                     threshold=relevance_threshold_applied,
                 )
                 timestamp = notification_items[0].timestamp if notification_items else "no-items"
+                date_for_subject = "no-items"
+                if notification_items:
+                    parsed_date = _extract_date_from_timestamp(timestamp)
+                    date_for_subject = (
+                        parsed_date.isoformat() if parsed_date is not None else timestamp
+                    )
                 current_hash = compute_items_hash(notification_items)
                 if args.suppress_duplicate:
                     last_hash = load_last_hash(args.state_file)
@@ -1068,7 +1290,7 @@ def main() -> int:
                         return 0
 
                 send_email_notification(
-                    subject=f"Security Update ({timestamp})",
+                    subject=f"Security Update ({date_for_subject})",
                     body=text,
                     smtp_host=smtp_host,
                     smtp_port=smtp_port,

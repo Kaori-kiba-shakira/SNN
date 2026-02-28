@@ -69,6 +69,26 @@ python fetch_security_news.py --previous-day-all --notify-email --suppress-dupli
 Groq評価はニュース1件ずつ順次実行し、前日分の評価がすべて完了した後に1通のメールへまとめて送信します。
 429/5xx が返る場合は、間隔制御と指数バックオフで自動再試行します。
 
+## Grok 4.1 Fast Reasoning 一括評価（任意）
+
+`grok-4-1-fast-reasoning` を使う場合は以下を設定します。
+
+- `GROK_API_KEY`（必須）
+- `GROK_API_BASE`（任意、既定 `https://api.x.ai/v1`）
+- `GROK_MODEL`（任意、既定 `grok-4-1-fast-reasoning`）
+- `GROQ_EVAL_MIN_INTERVAL_SEC`（任意、既定 `5.0`）
+- `GROQ_EVAL_MAX_RETRIES`（任意、既定 `3`）
+- `GROQ_EVAL_MAX_BACKOFF_SEC`（任意、既定 `90`）
+
+```bash
+export GROK_API_KEY="xai-..."
+export GROK_API_BASE="https://api.x.ai/v1"
+export GROK_MODEL="grok-4-1-fast-reasoning"
+python fetch_security_news.py --previous-day-all --evaluate-with-grok-4-1-fast-reasoning --relevance-threshold 0.9 --notify-email --fail-soft
+```
+
+`--evaluate-with-grok-4-1-fast-reasoning` は前日分の記事を1件ずつではなく、全件まとめて1回のAPIリクエストで評価します。
+
 ## Google Gemini関連度評価（任意）
 
 Groqの代わりにGoogle Geminiを使う場合は以下を設定します。

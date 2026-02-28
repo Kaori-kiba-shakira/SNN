@@ -35,9 +35,10 @@ jobs:
           SMTP_SSL: ${{ secrets.SMTP_SSL }}
           SMTP_STARTTLS: ${{ secrets.SMTP_STARTTLS }}
         run: |
-          python fetch_security_news.py \
-            --previous-day-all \
-            --evaluate-with-groq \
-            --groq-model llama-3.1-8b-instant \
-            --fail-soft \
-            --notify-email
+          python3 fetch_security_news.py \
+          --previous-day-all \
+          --grok-api-base https://api.x.ai/v1 \
+          --evaluate-with-grok-4-1-fast-reasoning \
+          --relevance-threshold 0.9 \
+          --fail-soft \
+          --notify-email
