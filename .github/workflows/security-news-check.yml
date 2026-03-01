@@ -25,6 +25,7 @@ jobs:
 
       - name: Run daily security fetch
         env:
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -40,5 +41,4 @@ jobs:
           --grok-api-base https://api.x.ai/v1 \
           --evaluate-with-grok-4-1-fast-reasoning \
           --relevance-threshold 0.9 \
-          --fail-soft \
           --notify-email
