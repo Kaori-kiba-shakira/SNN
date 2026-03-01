@@ -26,6 +26,13 @@ TARGET_URL = "http://izumino.jp/Security/sec_trend.cgi"
 TARGET_FEED_URLS = ["https://www.security-next.com/feed"]
 _LAST_LLM_CALL_TS = 0.0
 DETAIL_THRESHOLD = 0.9
+RELEVANCE_PROMPT_TARGET = (
+    "中央省庁または自治体、独立行政法人、保育園、こども園、幼稚園"
+)
+RELEVANCE_PROMPT_SCHEMA_BATCH = (
+    '{"results":[{"index":1,"score":0.0,"name":"インシデントが起きた組織名",'
+    '"summary":"score0.9以上の場合は200字以内で要約"}]}'
+)
 TARGET_ORG_HINTS = [
     "省",
     "庁",
@@ -427,40 +434,113 @@ def _is_target_org_context(name: str, title: str, body: str) -> bool:
     return any(hint in text for hint in TARGET_ORG_HINTS)
 
 
-def evaluate_relevance_with_groq(
-    item: SecurityNewsItem,
+def _build_relevance_system_prompt() -> str:
+    return (
+        "あなたはセキュリティニュースの評価器です。"
+        "必ずJSONのみを返し、トップレベルは results 配列を含むオブジェクトにしてください。"
+    )
+
+
+def _build_relevance_prompt_batch(items: List[SecurityNewsItem]) -> str:
+    prompt_items = []
+    for index, item in enumerate(items, start=1):
+        prompt_items.append(
+            {
+                "index": index,
+                "timestamp": item.timestamp,
+                "media": item.media,
+                "title": item.title,
+                "url": item.url,
+                "body": item.body,
+            }
+        )
+
+    return (
+        "あなたはセキュリティニュースの関連度評価器です。"
+        f"入力されたニュース一覧について、各ニュースが{RELEVANCE_PROMPT_TARGET}のセキュリティインシデントに該当するかを0.0から1.0で評価してください。"
+        "titleの内容での評価し。bodyやurl先はsummaryの作成のみ参考にしてください。"
+        "必ずJSONのみで返答し、以下のスキーマを厳守してください。"
+        f"{RELEVANCE_PROMPT_SCHEMA_BATCH}"
+        "index は必ず入力と同じ値で、score0.9以上のニュースを返すものとし、同一のインシデントに関するニュースが複数ある場合は1件だけ返してください。"
+        f"news_list: {json.dumps(prompt_items, ensure_ascii=False)}"
+    )
+
+
+def _parse_relevance_results_from_answer(
+    items: List[SecurityNewsItem],
+    answer: str,
+) -> dict[str, RelevanceResult]:
+    parsed_obj = _extract_json_object(answer)
+    raw_results: list[Any] = []
+    if parsed_obj and isinstance(parsed_obj.get("results"), list):
+        raw_results = parsed_obj.get("results", [])
+    else:
+        parsed_arr = _extract_json_array(answer)
+        if parsed_arr is not None:
+            raw_results = parsed_arr
+
+    score_by_index: dict[int, RelevanceResult] = {}
+    for value in raw_results:
+        if not isinstance(value, dict):
+            continue
+        index_raw = value.get("index")
+        try:
+            index = int(index_raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if index < 1 or index > len(items):
+            continue
+
+        item = items[index - 1]
+        score = _coerce_score(value.get("score", 0.0))
+        name = _truncate_text(value.get("name", ""), 120)
+        summary = _truncate_text(value.get("summary", ""), 100)
+
+        if not _is_target_org_context(name, item.title, item.body):
+            score = 0.0
+            name = ""
+            summary = ""
+
+        if score < DETAIL_THRESHOLD:
+            name = ""
+            summary = ""
+
+        score_by_index[index] = RelevanceResult(score=score, name=name, summary=summary)
+
+    results: dict[str, RelevanceResult] = {}
+    for index, item in enumerate(items, start=1):
+        results[build_item_key(item)] = score_by_index.get(
+            index,
+            RelevanceResult(score=0.0, name="", summary=""),
+        )
+    return results
+
+
+def evaluate_items_with_groq_batch(
+    items: List[SecurityNewsItem],
     *,
     api_base: str,
     api_key: str,
     model: str,
     timeout: tuple[float, float],
-) -> RelevanceResult:
+) -> dict[str, RelevanceResult]:
     global _LAST_LLM_CALL_TS
+
+    if not items:
+        return {}
 
     min_interval_sec = _env_float("GROQ_EVAL_MIN_INTERVAL_SEC", 5.0)
     max_retries = _env_int("GROQ_EVAL_MAX_RETRIES", 3)
     max_backoff_sec = _env_float("GROQ_EVAL_MAX_BACKOFF_SEC", 90.0)
 
     endpoint = f"{api_base.rstrip('/')}/chat/completions"
-    prompt = (
-        "あなたはセキュリティニュースの関連度評価器です。"
-        "以下のニュースが中央省庁や独立行政法人、地方公共団体、保育園、こども園、幼稚園に関するセキュリティインシデントに該当するかを0から1で評価してください。"
-        "必ずJSONのみで返答し、スキーマは"
-        '{"score":"0.0~1.0で評価","name":"インシデントが起きた組織名","summary":"score0.95以上の場合はurl先の記事内容を要約"}'
-        "としてください。"
-        f"title: {item.title}"
-        f"url: {item.url}"
-        f"body: {item.body}"
-    )
+    prompt = _build_relevance_prompt_batch(items)
     base_payload = {
         "model": model,
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "あなたはセキュリティニュースの評価器です。"
-                    "必ずJSONのみを返し、キーは score, name, summary の3つだけにしてください。"
-                ),
+                "content": _build_relevance_system_prompt(),
             },
             {"role": "user", "content": prompt},
         ],
@@ -559,60 +639,7 @@ def evaluate_relevance_with_groq(
         error_obj = data.get("error", {})
         error_message = str(error_obj.get("message", "unknown error"))
         raise RuntimeError(f"Groq API error: {error_message}")
-    parsed = _extract_json_object(answer)
-    if not parsed:
-        return RelevanceResult(
-            score=0.0,
-            name="",
-            summary="",
-        )
-    score = _coerce_score(parsed.get("score", 0.0))
-    name = _truncate_text(parsed.get("name", ""), 120)
-    summary = _truncate_text(parsed.get("summary", ""), 100)
-
-    if not _is_target_org_context(name, item.title, item.body):
-        score = 0.0
-        name = ""
-        summary = ""
-
-    if score < DETAIL_THRESHOLD:
-        name = ""
-        summary = ""
-
-    return RelevanceResult(
-        score=score,
-        name=name,
-        summary=summary,
-    )
-
-
-def evaluate_items_with_groq_sequential(
-    items: List[SecurityNewsItem],
-    *,
-    api_base: str,
-    api_key: str,
-    model: str,
-    timeout: tuple[float, float],
-) -> dict[str, RelevanceResult]:
-    results: dict[str, RelevanceResult] = {}
-    for item in items:
-        try:
-            relevance = evaluate_relevance_with_groq(
-                item,
-                api_base=api_base,
-                api_key=api_key,
-                model=model,
-                timeout=timeout,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[evaluate-error] {exc}", file=sys.stderr)
-            relevance = RelevanceResult(
-                score=0.0,
-                name="",
-                summary="",
-            )
-        results[build_item_key(item)] = relevance
-    return results
+    return _parse_relevance_results_from_answer(items, answer)
 
 
 def evaluate_items_with_grok_fast_reasoning_batch(
@@ -633,38 +660,14 @@ def evaluate_items_with_grok_fast_reasoning_batch(
     max_backoff_sec = _env_float("GROK_EVAL_MAX_BACKOFF_SEC", 90.0)
 
     endpoint = f"{api_base.rstrip('/')}/chat/completions"
-    prompt_items = []
-    for index, item in enumerate(items, start=1):
-        prompt_items.append(
-            {
-                "index": index,
-                "timestamp": item.timestamp,
-                "media": item.media,
-                "title": item.title,
-                "url": item.url,
-                "body": item.body,
-            }
-        )
-
-    prompt = (
-        "あなたはセキュリティニュースの関連度評価器です。"
-        "入力されたニュース一覧について、各ニュースが中央省庁または自治体、独立行政法人、保育園、こども園、幼稚園のセキュリティインシデントに該当するかを0.0から1.0で評価してください。"
-        "評価はtitleの内容での評価を原則としつつ、判断に迷う場合はbodyやurl先の記事内容も考慮してください。"
-        "必ずJSONのみで返答し、以下のスキーマを厳守してください。"
-        '{"results":[{"index":1,"score":0.0,"name":"インシデントが起きた組織名","summary":"score0.9以上の場合は200字以内で要約"}]}'
-        "index は必ず入力と同じ値で、score0.9以上のニュースを返すものとし、同一のインシデントに関するニュースが複数ある場合は1件だけ返してください。"
-        f"news_list: {json.dumps(prompt_items, ensure_ascii=False)}"
-    )
+    prompt = _build_relevance_prompt_batch(items)
 
     payload = {
         "model": model,
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "あなたはセキュリティニュースの評価器です。"
-                    "必ずJSONのみを返し、トップレベルは results 配列を含むオブジェクトにしてください。"
-                ),
+                "content": _build_relevance_system_prompt(),
             },
             {"role": "user", "content": prompt},
         ],
@@ -729,77 +732,28 @@ def evaluate_items_with_grok_fast_reasoning_batch(
         if isinstance(message, dict):
             answer = str(message.get("content", "")).strip()
 
-    parsed_obj = _extract_json_object(answer)
-    raw_results: list[Any] = []
-    if parsed_obj and isinstance(parsed_obj.get("results"), list):
-        raw_results = parsed_obj.get("results", [])
-    else:
-        parsed_arr = _extract_json_array(answer)
-        if parsed_arr is not None:
-            raw_results = parsed_arr
-
-    score_by_index: dict[int, RelevanceResult] = {}
-    for value in raw_results:
-        if not isinstance(value, dict):
-            continue
-        index_raw = value.get("index")
-        try:
-            index = int(index_raw)
-        except Exception:  # noqa: BLE001
-            continue
-        if index < 1 or index > len(items):
-            continue
-
-        item = items[index - 1]
-        score = _coerce_score(value.get("score", 0.0))
-        name = _truncate_text(value.get("name", ""), 120)
-        summary = _truncate_text(value.get("summary", ""), 100)
-
-        if not _is_target_org_context(name, item.title, item.body):
-            score = 0.0
-            name = ""
-            summary = ""
-
-        if score < DETAIL_THRESHOLD:
-            name = ""
-            summary = ""
-
-        score_by_index[index] = RelevanceResult(score=score, name=name, summary=summary)
-
-    results: dict[str, RelevanceResult] = {}
-    for index, item in enumerate(items, start=1):
-        results[build_item_key(item)] = score_by_index.get(
-            index,
-            RelevanceResult(score=0.0, name="", summary=""),
-        )
-    return results
+    return _parse_relevance_results_from_answer(items, answer)
 
 
-def evaluate_relevance_with_google_studio(
-    item: SecurityNewsItem,
+def evaluate_items_with_google_studio_batch(
+    items: List[SecurityNewsItem],
     *,
     api_base: str,
     api_key: str,
     model: str,
     timeout: tuple[float, float],
-) -> RelevanceResult:
+) -> dict[str, RelevanceResult]:
     global _LAST_LLM_CALL_TS
+
+    if not items:
+        return {}
 
     min_interval_sec = _env_float("GOOGLE_EVAL_MIN_INTERVAL_SEC", 1.0)
     max_retries = _env_int("GOOGLE_EVAL_MAX_RETRIES", 3)
     max_backoff_sec = _env_float("GOOGLE_EVAL_MAX_BACKOFF_SEC", 90.0)
 
     endpoint = f"{api_base.rstrip('/')}/models/{model}:generateContent?key={api_key}"
-    prompt = (
-        "あなたはセキュリティニュースの関連度評価器です。"
-        "以下のニュースが中央省庁や独立行政法人、地方公共団体、保育園、こども園、幼稚園に関するセキュリティインシデントに該当するかを0から1で評価してください。"
-        "必ずJSONのみで返答し、スキーマは"
-        '{"score":"0.0~1.0で評価","name":"インシデントが起きた組織名","summary":"score0.95以上の場合はurl先の記事内容を要約"}'
-        "としてください。"
-        f"title: {item.title}"
-        f"url: {item.url}"
-        f"body: {item.body}"
-    )
+    prompt = _build_relevance_prompt_batch(items)
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -808,11 +762,21 @@ def evaluate_relevance_with_google_studio(
             "responseMimeType": "application/json",
             "responseSchema": {
                 "type": "OBJECT",
-                "required": ["score", "name", "summary"],
+                "required": ["results"],
                 "properties": {
-                    "score": {"type": "NUMBER", "minimum": 0, "maximum": 1},
-                    "name": {"type": "STRING"},
-                    "summary": {"type": "STRING"},
+                    "results": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "required": ["index", "score", "name", "summary"],
+                            "properties": {
+                                "index": {"type": "INTEGER", "minimum": 1},
+                                "score": {"type": "NUMBER", "minimum": 0, "maximum": 1},
+                                "name": {"type": "STRING"},
+                                "summary": {"type": "STRING"},
+                            },
+                        },
+                    },
                 },
             },
         },
@@ -874,62 +838,7 @@ def evaluate_relevance_with_google_studio(
             if isinstance(raw_parts, list):
                 parts = [part for part in raw_parts if isinstance(part, dict)]
     answer = "\n".join(str(part.get("text", "")) for part in parts).strip()
-
-    parsed = _extract_json_object(answer)
-    if not parsed:
-        return RelevanceResult(
-            score=0.0,
-            name="",
-            summary="",
-        )
-
-    score = _coerce_score(parsed.get("score", 0.0))
-    name = _truncate_text(parsed.get("name", ""), 120)
-    summary = _truncate_text(parsed.get("summary", ""), 100)
-
-    if not _is_target_org_context(name, item.title, item.body):
-        score = 0.0
-        name = ""
-        summary = ""
-
-    if score < DETAIL_THRESHOLD:
-        name = ""
-        summary = ""
-
-    return RelevanceResult(
-        score=score,
-        name=name,
-        summary=summary,
-    )
-
-
-def evaluate_items_with_google_studio_sequential(
-    items: List[SecurityNewsItem],
-    *,
-    api_base: str,
-    api_key: str,
-    model: str,
-    timeout: tuple[float, float],
-) -> dict[str, RelevanceResult]:
-    results: dict[str, RelevanceResult] = {}
-    for item in items:
-        try:
-            relevance = evaluate_relevance_with_google_studio(
-                item,
-                api_base=api_base,
-                api_key=api_key,
-                model=model,
-                timeout=timeout,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[evaluate-error] {exc}", file=sys.stderr)
-            relevance = RelevanceResult(
-                score=0.0,
-                name="",
-                summary="",
-            )
-        results[build_item_key(item)] = relevance
-    return results
+    return _parse_relevance_results_from_answer(items, answer)
 
 
 def serialize_items(
@@ -1177,7 +1086,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
             else:
-                relevance_map = evaluate_items_with_groq_sequential(
+                relevance_map = evaluate_items_with_groq_batch(
                     items,
                     api_base=args.groq_api_base,
                     api_key=groq_api_key,
@@ -1204,7 +1113,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
             else:
-                relevance_map = evaluate_items_with_google_studio_sequential(
+                relevance_map = evaluate_items_with_google_studio_batch(
                     items,
                     api_base=args.google_api_base,
                     api_key=google_api_key,
