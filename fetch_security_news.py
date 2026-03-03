@@ -363,7 +363,7 @@ def build_notification_text(
     parsed_date = _extract_date_from_timestamp(timestamp)
     if parsed_date is not None:
         date_for_header = parsed_date.isoformat()
-    lines = [f"Security Update ({date_for_header})"]
+    lines = [f"Security Update ({date_for_header})\n"]
     for item in items:
         key = build_item_key(item)
         relevance = relevance_map.get(key)
@@ -458,7 +458,7 @@ def _build_relevance_prompt_batch(items: List[SecurityNewsItem]) -> str:
     return (
         "あなたはセキュリティニュースの関連度評価器です。"
         f"入力されたニュース一覧について、各ニュースが{RELEVANCE_PROMPT_TARGET}のセキュリティインシデントに該当するかを0.0から1.0で評価してください。"
-        "titleの内容での評価し、bodyやurl先はsummaryの作成のみ参考にしてください。"
+        "titleの内容で評価し、bodyやurl先はsummaryの作成のみ参考にしてください。"
         "必ずJSONのみで返答し、以下のスキーマを厳守してください。"
         f"{RELEVANCE_PROMPT_SCHEMA_BATCH}"
         "index は必ず入力と同じ値で、score0.9以上のニュースを返すものとし、同一のインシデントに関するニュースが複数ある場合は記事内容が最も詳細なものを1件だけ返してください。"
