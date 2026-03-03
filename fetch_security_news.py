@@ -31,7 +31,7 @@ RELEVANCE_PROMPT_TARGET = (
 )
 RELEVANCE_PROMPT_SCHEMA_BATCH = (
     '{"results":[{"index":1,"score":0.0,"name":"インシデントが起きた組織名",'
-    '"summary":"score0.9以上の場合は200字以内で要約"}]}'
+    '"summary":"score0.9以上の場合は200字以内で要約し、漏えいした情報種別や数などの具体的な被害状況が記載されている場合は含めるようにしてください。"}]}'
 )
 TARGET_ORG_HINTS = [
     "省",
