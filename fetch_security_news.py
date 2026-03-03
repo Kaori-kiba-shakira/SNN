@@ -457,7 +457,7 @@ def _build_relevance_prompt_batch(items: List[SecurityNewsItem]) -> str:
 
     return (
         "あなたはセキュリティニュースの関連度評価器です。"
-        f"入力されたニュース一覧について、各ニュースが{RELEVANCE_PROMPT_TARGET}のセキュリティインシデントに該当するかを0.0から1.0で評価してください。"
+        f"入力されたニュース一覧について、各ニュースが{RELEVANCE_PROMPT_TARGET}のセキュリティインシデントやシステム障害に該当するかを0.0から1.0で評価してください。"
         "titleの内容で評価し、bodyやurl先はsummaryの作成のみ参考にしてください。"
         "必ずJSONのみで返答し、以下のスキーマを厳守してください。"
         f"{RELEVANCE_PROMPT_SCHEMA_BATCH}"
