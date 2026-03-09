@@ -370,13 +370,13 @@ def build_notification_text(
         if relevance is not None:
             lines.append(f"- [{item.media}] {item.title} (score={relevance.score:.2f})")
             if relevance.name:
-                lines.append(f"  name: {relevance.name}")
+                lines.append(f"  - name: {relevance.name}")
             if relevance.summary:
-                lines.append(f"  summary: {relevance.summary}")
+                lines.append(f"  - summary: {relevance.summary}")
         else:
             lines.append(f"- [{item.media}] {item.title}")
         if item.url:
-            lines.append(f"  {item.url}")
+            lines.append(f"  - {item.url}")
         lines.append("")
 
     return "\n".join(lines)
