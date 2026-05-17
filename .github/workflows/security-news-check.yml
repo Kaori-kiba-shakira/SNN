@@ -38,6 +38,6 @@ jobs:
           python3 fetch_security_news.py \
           --previous-day-all \
           --grok-api-base https://api.x.ai/v1 \
-          --evaluate-with-grok-4-1-fast-reasoning \
-          --relevance-threshold 0.9 \
+          --evaluate-with-grok \
+          --relevance-threshold 0.85 \
           --notify-email

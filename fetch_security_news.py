@@ -1008,7 +1008,7 @@ def main() -> int:
     parser.add_argument("--notify-only-new", action="store_true")
     parser.add_argument("--state-file", default=".state/last_notification.json")
     parser.add_argument("--evaluate-with-groq", action="store_true")
-    parser.add_argument("--evaluate-with-grok-4-1-fast-reasoning", action="store_true")
+    parser.add_argument("--evaluate-with-grok", action="store_true")
     parser.add_argument("--evaluate-with-google-studio", action="store_true")
     parser.add_argument("--relevance-threshold", type=float, default=0.9)
     parser.add_argument("--groq-api-base", default="https://api.groq.com/openai/v1")
@@ -1041,17 +1041,17 @@ def main() -> int:
         evaluated_items_count = 0
         relevance_threshold_applied: float | None = None
         selected_providers = [
-            args.evaluate_with_grok_4_1_fast_reasoning,
+            args.evaluate_with_grok,
             args.evaluate_with_groq,
             args.evaluate_with_google_studio,
         ]
         if sum(1 for value in selected_providers if value) > 1:
             print(
-                "[evaluate-warn] multiple providers requested; using grok-4-1-fast-reasoning route first",
+                "[evaluate-warn] multiple providers requested; using grok route first",
                 file=sys.stderr,
             )
 
-        if args.evaluate_with_grok_4_1_fast_reasoning:
+        if args.evaluate_with_grok:
             grok_api_key = os.getenv(args.grok_api_key_env, "").strip()
             if not grok_api_key:
                 print(
