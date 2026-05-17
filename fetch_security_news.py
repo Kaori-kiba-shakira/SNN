@@ -1019,7 +1019,7 @@ def main() -> int:
     parser.add_argument("--google-model", default="gemini-2.5-flash")
     parser.add_argument("--grok-api-base", default="https://api.x.ai/v1")
     parser.add_argument("--grok-api-key-env", default="GROK_API_KEY")
-    parser.add_argument("--grok-model", default="grok-4-1-fast-reasoning")
+    parser.add_argument("--grok-model", default="grok-4.3")
     args = parser.parse_args()
 
     try:
